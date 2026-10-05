@@ -1,0 +1,119 @@
+# Smart E-Commerce
+
+A small submission/demo storefront built as a single workspace with a clear backend split:
+
+All catalog, order, and payment amounts are displayed and charged in Indian rupees (INR). Existing numeric product prices are treated as INR; no exchange-rate conversion is applied.
+
+- Django owns MySQL tables, migrations, Django Admin, and staff reporting.
+- FastAPI serves the customer API and uses SQLAlchemy 2 mappings only. It does not create or migrate tables.
+- Next.js provides the customer-facing pages.
+
+## Requirements
+
+- Python 3.12
+- MySQL 8.x with a database named `smart_ecommerce`
+- Node.js 20 or newer and npm
+
+The existing local service environments use Python 3.12.10. Keep their virtual environments separate.
+
+## Configure MySQL and Environment
+
+Create the database and a local development account in MySQL (choose a private password yourself):
+
+```sql
+CREATE DATABASE smart_ecommerce CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'smart_ecommerce_admin'@'localhost' IDENTIFIED BY 'choose-a-local-password';
+GRANT ALL PRIVILEGES ON smart_ecommerce.* TO 'smart_ecommerce_admin'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+From the repository root, copy `.env.example` to `.env` and replace the database password and both application secret keys with local values. `.env` is ignored by Git; do not submit it. Stripe values in the example are placeholders, not working credentials.
+
+## Install and Run
+
+Open three PowerShell terminals from the repository root.
+
+Django Admin and database migrations:
+
+```powershell
+Set-Location backend/django_service
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py seed_demo
+python manage.py createsuperuser
+python manage.py runserver 127.0.0.1:8001
+```
+
+FastAPI customer service:
+
+```powershell
+Set-Location backend/fastapi_service
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Next.js storefront:
+
+```powershell
+Set-Location frontend
+npm install
+$env:NEXT_PUBLIC_API_URL = 'http://127.0.0.1:8000'
+npm run dev
+```
+
+Open the storefront at `http://localhost:3000`, FastAPI docs at `http://127.0.0.1:8000/docs`, and Django Admin at `http://127.0.0.1:8001/admin/`. The Django reports page is at `http://127.0.0.1:8001/admin/reports/` after staff login.
+
+If the Python venvs do not exist yet, create each with `py -3.12 -m venv .venv` from its service directory before installing requirements. On this Windows setup, make sure the Node.js install directory is on PATH before running npm.
+
+## Demo Data and Credentials
+
+`python manage.py seed_demo` idempotently creates a small catalog with categories, prices, popularity, and stock values. It does not create accounts or passwords.
+
+Create the Django administrator with the interactive `createsuperuser` command. Register a customer through the storefront or `POST /api/auth/register`. There are intentionally no default usernames or passwords in source control; use local-only credentials and do not include `.env` or real secrets in a submission.
+
+Django Admin supports user creation, roles (`admin`, `staff`, `customer`), product and image management, orders, payments, carts, and notifications. Staff reports show paid sales, monthly revenue, actual top-selling products, and low-stock products. CSV/PDF downloads are available on the dashboard and at `/api/admin/reports?export=csv` or `?export=pdf` with a Django JWT for a staff user.
+
+## Payment, Email, and Social Login
+
+- With a valid Stripe **test** secret (`sk_test_...`), checkout creates a Stripe Checkout Session. Set the webhook signing secret to enable `/api/payments/webhook`; checkout return confirmation also verifies the session with Stripe.
+- With the example placeholder key, checkout uses a clearly labeled demo-only confirmation path so the local project can be shown without payment credentials. Never enter or store a CVV in this application.
+- Configure SMTP values in `.env` to send welcome, order, and payment email notices. Failed SMTP delivery does not block checkout. In-app notifications are stored in MySQL and pushed to authenticated WebSocket clients at `/ws/notifications?token=<access-token>`.
+- Google, Facebook, and Auth0 are configuration placeholders. `GET /api/auth/providers` reports which provider values are configured; actual provider credentials and callback setup are intentionally outside this simple submission build.
+
+## Database Ownership
+
+Run schema changes only through Django:
+
+```powershell
+python manage.py makemigrations
+python manage.py migrate
+```
+
+FastAPI's SQLAlchemy models mirror the Django tables for queries and writes. FastAPI intentionally has no Alembic setup and never calls `Base.metadata.create_all()`.
+
+## Main API Routes
+
+- `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`
+- `GET /api/categories`, `GET /api/products` (supports `category`, `min_price`, `max_price`, `sort`, and `q`), `GET /api/products/{id}`
+- `GET /api/cart`, `POST /api/cart/items`, `PUT|DELETE /api/cart/items/{id}`
+- `POST /api/orders`, `GET /api/orders`, `GET /api/orders/{id}`
+- `POST /api/payments/create`, `POST /api/payments/confirm`, `POST /api/payments/webhook`
+- `GET /api/notifications`, `PUT /api/notifications/{id}/read`, `WS /ws/notifications`
+- Django staff endpoints: `/api/admin/users`, `/api/admin/products`, `/api/admin/orders`, `/api/admin/dashboard`, `/api/admin/reports`
+
+Import `docs/postman_collection.json` into Postman. Set `apiUrl` to `http://127.0.0.1:8000` and `djangoUrl` to `http://127.0.0.1:8001`. The login/register requests save the access token for subsequent requests.
+
+## Basic Checks
+
+```powershell
+# Django
+python manage.py check
+python manage.py makemigrations --check --dry-run
+
+# Frontend
+npm run build
+```
+
+For a demo screenshot, start all three services, register a customer, browse the seeded products, and open the Django Admin reports page in a second browser session.

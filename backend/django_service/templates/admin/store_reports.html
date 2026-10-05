@@ -1,0 +1,38 @@
+{% extends "admin/base_site.html" %}
+
+{% block title %}Sales dashboard | Smart E-Commerce{% endblock %}
+
+{% block content %}
+<h1>Sales dashboard</h1>
+<p><a href="/api/admin/reports?export=csv">Download CSV</a> | <a href="/api/admin/reports?export=pdf">Download PDF</a></p>
+<div class="module">
+  <h2>Summary</h2>
+  <p>Total paid sales: &#8377;{{ total_sales|floatformat:2 }} | Orders: {{ order_count }} | Users: {{ user_count }}</p>
+</div>
+<div class="module">
+  <h2>Revenue by month</h2>
+  {% for item in revenue_trends %}
+    <p>{{ item.month }} &nbsp; &#8377;{{ item.revenue|floatformat:2 }}<br><span style="display:block;background:#417690;height:12px;width:{{ item.bar_width }}%"></span></p>
+  {% empty %}
+    <p>No paid orders yet.</p>
+  {% endfor %}
+</div>
+<div class="module">
+  <h2>Top-selling products</h2>
+  <table>
+    <thead><tr><th>Product</th><th>Units sold</th></tr></thead>
+    <tbody>
+      {% for item in top_products %}<tr><td>{{ item.name }}</td><td>{{ item.units_sold }}</td></tr>{% empty %}<tr><td colspan="2">No paid sales yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="module">
+  <h2>Low-stock products</h2>
+  <table>
+    <thead><tr><th>Product</th><th>Stock</th></tr></thead>
+    <tbody>
+      {% for product in low_stock_products %}<tr><td>{{ product.name }}</td><td>{{ product.stock }}</td></tr>{% empty %}<tr><td colspan="2">No low-stock products.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

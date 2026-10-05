@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+*.pyo
+*.sqlite3
+*.log
+*.tsbuildinfo
+backend/django_service/.venv/
+backend/fastapi_service/.venv/
+backend/django_service/media/

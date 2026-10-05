@@ -1,0 +1,84 @@
+{
+  "info": {
+    "name": "Smart E-Commerce API",
+    "description": "Customer APIs run in FastAPI; staff management and reports run in Django.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "apiUrl", "value": "http://127.0.0.1:8000" },
+    { "key": "djangoUrl", "value": "http://127.0.0.1:8001" },
+    { "key": "token", "value": "" },
+    { "key": "productId", "value": "1" },
+    { "key": "cartItemId", "value": "1" },
+    { "key": "orderId", "value": "1" },
+    { "key": "notificationId", "value": "1" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Register customer",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Demo Customer\",\n  \"email\": \"customer@example.com\",\n  \"password\": \"change-this-locally\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{apiUrl}}/api/auth/register"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["if (pm.response.code === 200) { pm.collectionVariables.set('token', pm.response.json().token.access); }"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"customer@example.com\",\n  \"password\": \"change-this-locally\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{apiUrl}}/api/auth/login"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["if (pm.response.code === 200) { pm.collectionVariables.set('token', pm.response.json().token.access); }"], "type": "text/javascript" } }]
+        },
+        { "name": "Providers", "request": { "method": "GET", "url": "{{apiUrl}}/api/auth/providers" } },
+        { "name": "Current user", "request": { "method": "GET", "url": "{{apiUrl}}/api/auth/me" } }
+      ]
+    },
+    {
+      "name": "Catalog and Cart",
+      "item": [
+        { "name": "Categories", "request": { "method": "GET", "url": "{{apiUrl}}/api/categories" } },
+        { "name": "Browse products", "request": { "method": "GET", "url": "{{apiUrl}}/api/products?sort=popularity" } },
+        { "name": "Filter products", "request": { "method": "GET", "url": "{{apiUrl}}/api/products?min_price=10&max_price=80&sort=price_asc" } },
+        { "name": "Product detail", "request": { "method": "GET", "url": "{{apiUrl}}/api/products/{{productId}}" } },
+        { "name": "Get cart", "request": { "method": "GET", "url": "{{apiUrl}}/api/cart" } },
+        { "name": "Add cart item", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"product\": {{productId}},\n  \"quantity\": 1\n}", "options": { "raw": { "language": "json" } } }, "url": "{{apiUrl}}/api/cart/items" } },
+        { "name": "Update cart item", "request": { "method": "PUT", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"quantity\": 2\n}", "options": { "raw": { "language": "json" } } }, "url": "{{apiUrl}}/api/cart/items/{{cartItemId}}" } },
+        { "name": "Remove cart item", "request": { "method": "DELETE", "url": "{{apiUrl}}/api/cart/items/{{cartItemId}}" } }
+      ]
+    },
+    {
+      "name": "Orders and Notifications",
+      "item": [
+        { "name": "Place order", "request": { "method": "POST", "url": "{{apiUrl}}/api/orders" } },
+        { "name": "Order history", "request": { "method": "GET", "url": "{{apiUrl}}/api/orders" } },
+        { "name": "Order detail", "request": { "method": "GET", "url": "{{apiUrl}}/api/orders/{{orderId}}" } },
+        { "name": "Create payment session", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"order_id\": {{orderId}}\n}", "options": { "raw": { "language": "json" } } }, "url": "{{apiUrl}}/api/payments/create" } },
+        { "name": "Confirm demo/test payment", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"order_id\": {{orderId}}\n}", "options": { "raw": { "language": "json" } } }, "url": "{{apiUrl}}/api/payments/confirm" } },
+        { "name": "Notifications", "request": { "method": "GET", "url": "{{apiUrl}}/api/notifications" } },
+        { "name": "Mark notification read", "request": { "method": "PUT", "url": "{{apiUrl}}/api/notifications/{{notificationId}}/read" } }
+      ]
+    },
+    {
+      "name": "Django Staff APIs",
+      "item": [
+        { "name": "Dashboard metrics", "request": { "method": "GET", "url": "{{djangoUrl}}/api/admin/dashboard" } },
+        { "name": "Download CSV report", "request": { "method": "GET", "url": "{{djangoUrl}}/api/admin/reports?export=csv" } },
+        { "name": "Download PDF report", "request": { "method": "GET", "url": "{{djangoUrl}}/api/admin/reports?export=pdf" } },
+        { "name": "List staff users", "request": { "method": "GET", "url": "{{djangoUrl}}/api/admin/users" } },
+        { "name": "List admin orders", "request": { "method": "GET", "url": "{{djangoUrl}}/api/admin/orders" } }
+      ]
+    }
+  ]
+}
