@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
@@ -80,12 +80,31 @@ class Order(Base):
     user_id = Column(Integer, ForeignKey('store_user.id'), nullable=False)
     total = Column(Numeric(12, 2), default=0)
     payment_status = Column(String(20), default='pending')
-    order_status = Column(String(20), default='pending')
+    order_status = Column(String(30), default='order_placed')
     timestamp = Column(DateTime, default=datetime.utcnow)
+    shipping_address = Column(Text, default='')
+    tracking_number = Column(String(40), default='')
+    carrier_name = Column(String(100), default='SmartCart Express')
+    shipped_at = Column(DateTime, nullable=True)
+    estimated_delivery = Column(Date, nullable=True)
 
     user = relationship('User', back_populates='orders')
     items = relationship('OrderItem', back_populates='order')
     payments = relationship('Payment', back_populates='order')
+    status_history = relationship('OrderStatusEvent', back_populates='order', order_by='OrderStatusEvent.timestamp, OrderStatusEvent.id')
+
+    @property
+    def customer_name(self):
+        return self.user.name
+
+    @property
+    def customer_email(self):
+        return self.user.email
+
+    @property
+    def payment_method(self):
+        payment = self.payments[0] if self.payments else None
+        return payment.payment_method if payment else 'online'
 
 
 class OrderItem(Base):
@@ -100,6 +119,25 @@ class OrderItem(Base):
     order = relationship('Order', back_populates='items')
     product = relationship('Product', back_populates='order_items')
 
+    @property
+    def product_name(self):
+        return self.product.name
+
+    @property
+    def product_image(self):
+        return self.product.image
+
+
+class OrderStatusEvent(Base):
+    __tablename__ = 'store_order_status_event'
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey('store_order.id'), nullable=False)
+    status = Column(String(30), nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    order = relationship('Order', back_populates='status_history')
+
 
 class Payment(Base):
     __tablename__ = 'store_payment'
@@ -107,7 +145,7 @@ class Payment(Base):
     id = Column(Integer, primary_key=True, index=True)
     order_id = Column(Integer, ForeignKey('store_order.id'), nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)
-    payment_method = Column(String(20), default='stripe')
+    payment_method = Column(String(20), default='online')
     transaction_id = Column(String(150), default='')
     status = Column(String(20), default='pending')
     created_at = Column(DateTime, default=datetime.utcnow)

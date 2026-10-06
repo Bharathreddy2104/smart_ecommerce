@@ -1,4 +1,4 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000';
+﻿export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:8000';
 const MEDIA_BASE = process.env.NEXT_PUBLIC_DJANGO_MEDIA_URL ?? 'http://127.0.0.1:8001/media';
 const INR_FORMATTER = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' });
 
@@ -28,7 +28,9 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   }
   if (typeof window !== 'undefined') {
     const token = localStorage.getItem('smart_ecom_token');
-    if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', 'Bearer ' + token);
+    }
   }
 
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });

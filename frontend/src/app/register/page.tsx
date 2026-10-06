@@ -17,13 +17,16 @@ export default function RegisterPage() {
         body: JSON.stringify(form),
       });
       localStorage.setItem('smart_ecom_token', data.token.access);
-      const productId = new URLSearchParams(window.location.search).get('add_product');
+      const params = new URLSearchParams(window.location.search);
+      const productId = params.get('add_product');
       if (productId && /^\d+$/.test(productId)) {
+        const requestedQuantity = Number(params.get('quantity'));
+        const quantity = Number.isSafeInteger(requestedQuantity) && requestedQuantity > 0 ? requestedQuantity : 1;
         await apiFetch('/api/cart/items', {
           method: 'POST',
-          body: JSON.stringify({ product: Number(productId), quantity: 1 }),
+          body: JSON.stringify({ product: Number(productId), quantity }),
         });
-        window.location.href = '/cart';
+        window.location.href = params.get('checkout') === '1' ? '/checkout' : '/cart';
         return;
       }
       window.location.href = '/products';

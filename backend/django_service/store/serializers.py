@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Category, Product, Cart, Order, OrderItem, Payment, Notification
+from .models import User, Category, Product, Cart, Order, OrderItem, OrderStatusEvent, Payment, Notification
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -54,28 +54,58 @@ class CartSerializer(serializers.ModelSerializer):
     def get_product_name(self, obj):
         return obj.product.name
 
+    def get_product_image(self, obj):
+        return obj.product.image.url if obj.product.image else None
+
     def get_unit_price(self, obj):
         return obj.product.price
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
     product_name = serializers.SerializerMethodField()
+    product_image = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
-        fields = ['id', 'product', 'product_name', 'quantity', 'price']
+        fields = ['id', 'product', 'product_name', 'product_image', 'quantity', 'price']
 
     def get_product_name(self, obj):
         return obj.product.name
 
 
+class OrderStatusEventSerializer(serializers.ModelSerializer):
+    status_label = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = OrderStatusEvent
+        fields = ['id', 'status', 'status_label', 'timestamp']
+
+
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
+    status_history = OrderStatusEventSerializer(many=True, read_only=True)
+    customer_name = serializers.CharField(source='user.name', read_only=True)
+    customer_email = serializers.EmailField(source='user.email', read_only=True)
+    order_status_label = serializers.CharField(source='get_order_status_display', read_only=True)
+    payment_method = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
-        fields = ['id', 'user', 'total', 'payment_status', 'order_status', 'timestamp', 'items']
-        read_only_fields = ['id', 'timestamp', 'items']
+        fields = [
+            'id', 'user', 'customer_name', 'customer_email', 'total',
+            'payment_status', 'order_status', 'order_status_label', 'timestamp',
+            'shipping_address', 'tracking_number', 'carrier_name', 'shipped_at',
+            'estimated_delivery', 'payment_method', 'items', 'status_history',
+        ]
+        read_only_fields = [
+            'id', 'user', 'customer_name', 'customer_email', 'timestamp',
+            'order_status', 'order_status_label', 'tracking_number', 'carrier_name',
+            'shipped_at', 'estimated_delivery', 'items', 'status_history',
+        ]
+
+    def get_payment_method(self, obj):
+        payment = obj.payments.first()
+        return payment.payment_method if payment else None
 
 
 class PaymentSerializer(serializers.ModelSerializer):

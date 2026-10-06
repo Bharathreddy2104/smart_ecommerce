@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import uuid
 
 import stripe
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, Request, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -15,14 +15,16 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.models import Cart, Category, Notification, Order, OrderItem, Payment, Product, User
+from app.db.models import Cart, Category, Notification, Order, OrderItem, OrderStatusEvent, Payment, Product, User
 from app.db.session import get_db
 from app.schemas import (
     CartItemRead,
     CategoryRead,
     LoginRequest,
     NotificationRead,
+    OrderCreate,
     OrderRead,
+    PaymentCreate,
     PaymentRead,
     ProductRead,
     Token,
@@ -42,6 +44,30 @@ app.add_middleware(
 pwd_context = CryptContext(schemes=['django_pbkdf2_sha256'])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl='/api/auth/login')
 active_connections: Dict[int, List[WebSocket]] = {}
+ORDER_PROGRESS = (
+    'order_placed',
+    'payment_confirmed',
+    'order_confirmed',
+    'processing',
+    'packed',
+    'shipped',
+    'out_for_delivery',
+    'delivered',
+)
+ORDER_STATUS_LABELS = {
+    'order_placed': 'placed',
+    'payment_confirmed': 'payment confirmed',
+    'order_confirmed': 'confirmed',
+    'processing': 'processing',
+    'packed': 'packed',
+    'shipped': 'shipped',
+    'out_for_delivery': 'out for delivery',
+    'delivered': 'delivered',
+    'cancelled': 'cancelled',
+    'payment_failed': 'payment failed',
+    'return_requested': 'return requested',
+    'returned': 'returned',
+}
 
 
 def send_email(recipient: str, subject: str, body: str) -> None:
@@ -88,6 +114,57 @@ def add_notification(db: Session, user_id: int, notification_type: str, message:
         'message': notification.message,
         'timestamp': notification.timestamp.isoformat(),
     })
+
+
+def update_order_status(db: Session, order: Order, new_status: str, background_tasks: BackgroundTasks) -> None:
+    if new_status not in ORDER_STATUS_LABELS:
+        raise HTTPException(status_code=400, detail='Invalid order status.')
+    if order.order_status == new_status:
+        return
+
+    previous_index = ORDER_PROGRESS.index(order.order_status) if order.order_status in ORDER_PROGRESS else -1
+    current_index = ORDER_PROGRESS.index(new_status) if new_status in ORDER_PROGRESS else -1
+    statuses_to_record = (
+        ORDER_PROGRESS[previous_index + 1:current_index + 1]
+        if previous_index >= 0 and current_index > previous_index
+        else [new_status]
+    )
+    order.order_status = new_status
+    if new_status in {'shipped', 'out_for_delivery', 'delivered'}:
+        order.tracking_number = order.tracking_number or f'SC{order.id:09d}'
+        order.shipped_at = order.shipped_at or datetime.utcnow()
+    if not order.estimated_delivery:
+        order.estimated_delivery = (order.timestamp or datetime.utcnow()).date() + timedelta(days=5)
+
+    notifications = []
+    for status_value in statuses_to_record:
+        db.add(OrderStatusEvent(order_id=order.id, status=status_value))
+        label = ORDER_STATUS_LABELS[status_value]
+        if status_value == 'out_for_delivery':
+            text = 'is out for delivery.'
+        elif status_value == 'payment_confirmed':
+            text = 'has confirmed payment.'
+        elif status_value == 'order_placed':
+            text = 'has been placed.'
+        else:
+            text = f'has been {label}.'
+        notification = Notification(
+            user_id=order.user_id,
+            type='shipping' if status_value in {'shipped', 'out_for_delivery', 'delivered'} else 'order',
+            message=f'Your order #{order.id} {text}',
+        )
+        db.add(notification)
+        notifications.append(notification)
+
+    db.commit()
+    for notification in notifications:
+        db.refresh(notification)
+        background_tasks.add_task(broadcast_notification, order.user_id, {
+            'id': notification.id,
+            'type': notification.type,
+            'message': notification.message,
+            'timestamp': notification.timestamp.isoformat(),
+        })
 
 
 @app.get('/')
@@ -298,7 +375,13 @@ def delete_cart_item(item_id: int, current_user: User = Depends(get_current_user
 
 
 @app.post('/api/orders', response_model=OrderRead)
-def create_order(background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_order(
+    background_tasks: BackgroundTasks,
+    payload: Optional[OrderCreate] = Body(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    payload = payload or OrderCreate()
     cart_items = db.query(Cart).filter(Cart.user_id == current_user.id).all()
     if not cart_items:
         raise HTTPException(status_code=400, detail='Cart is empty.')
@@ -309,16 +392,29 @@ def create_order(background_tasks: BackgroundTasks, current_user: User = Depends
             raise HTTPException(status_code=400, detail=f'Not enough stock for {item.product.name}.')
         total += Decimal(item.quantity) * item.product.price
 
-    order = Order(user_id=current_user.id, total=total, payment_status='pending', order_status='pending')
+    order = Order(
+        user_id=current_user.id,
+        total=total,
+        payment_status='pending',
+        order_status='order_placed',
+        shipping_address=payload.shipping_address.strip(),
+        estimated_delivery=(datetime.utcnow() + timedelta(days=5)).date(),
+    )
     db.add(order)
     db.commit(); db.refresh(order)
+    db.add(OrderStatusEvent(order_id=order.id, status='order_placed'))
 
     for item in cart_items:
         order_item = OrderItem(order_id=order.id, product_id=item.product_id, quantity=item.quantity, price=item.product.price)
         db.add(order_item)
         item.product.stock -= item.quantity
 
-    db.add(Payment(order_id=order.id, amount=total, payment_method='stripe', status='pending'))
+    db.add(Payment(
+        order_id=order.id,
+        amount=total,
+        payment_method=payload.payment_method,
+        status='pending',
+    ))
     db.query(Cart).filter(Cart.user_id == current_user.id).delete()
     db.commit()
     db.refresh(order)
@@ -342,18 +438,23 @@ def get_order(order_id: int, current_user: User = Depends(get_current_user), db:
 
 
 @app.post('/api/payments/create', response_model=dict)
-def create_payment(payload: dict, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    order_id = int(payload.get('order_id'))
+def create_payment(payload: PaymentCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    order_id = payload.order_id
     order = db.query(Order).filter(Order.id == order_id, Order.user_id == current_user.id).first()
     if not order:
         raise HTTPException(status_code=404, detail='Order not found.')
     payment = db.query(Payment).filter(Payment.order_id == order.id).first()
+    if payment is None:
+        raise HTTPException(status_code=404, detail='Payment record not found.')
+    if payment.payment_method == 'cash_on_delivery':
+        raise HTTPException(status_code=400, detail='Cash on Delivery does not use online payment.')
     stripe_key = settings.STRIPE_SECRET_KEY
     stripe_enabled = stripe_test_mode_enabled()
     if stripe_enabled:
         try:
             session = stripe.checkout.Session.create(
                 mode='payment',
+                payment_method_types=['card'],
                 line_items=[{
                     'price_data': {
                         'currency': 'inr',
@@ -362,17 +463,13 @@ def create_payment(payload: dict, current_user: User = Depends(get_current_user)
                     },
                     'quantity': 1,
                 }],
-                success_url=f'{settings.FRONTEND_BASE_URL}/checkout?session_id={{CHECKOUT_SESSION_ID}}',
+                success_url=f'{settings.FRONTEND_BASE_URL}/order-confirmation/{order.id}?session_id={{CHECKOUT_SESSION_ID}}',
                 cancel_url=f'{settings.FRONTEND_BASE_URL}/checkout?cancelled=1',
                 metadata={'order_id': str(order.id), 'user_id': str(current_user.id)},
                 api_key=stripe_key,
             )
         except stripe.StripeError:
             raise HTTPException(status_code=502, detail='Stripe test checkout could not be created.')
-        if payment is None:
-            payment = Payment(order_id=order.id, amount=order.total)
-            db.add(payment)
-        payment.payment_method = 'stripe'
         payment.transaction_id = session.id
         payment.status = 'pending'
         db.commit()
@@ -380,10 +477,7 @@ def create_payment(payload: dict, current_user: User = Depends(get_current_user)
         result = PaymentRead.model_validate(payment).model_dump()
         return {**result, 'checkout_url': session.url, 'demo': False}
 
-    if payment is None:
-        payment = Payment(order_id=order.id, amount=order.total, payment_method='mock', status='pending')
-        db.add(payment)
-    payment.payment_method = 'mock'
+    payment.transaction_id = f'demo_{uuid.uuid4().hex}'
     payment.status = 'pending'
     db.commit()
     db.refresh(payment)
@@ -400,10 +494,13 @@ def confirm_payment(payload: dict, background_tasks: BackgroundTasks, current_us
     payment = db.query(Payment).filter(Payment.order_id == order.id).first()
     if not payment:
         raise HTTPException(status_code=404, detail='Payment not found.')
+    if payment.payment_method == 'cash_on_delivery':
+        raise HTTPException(status_code=400, detail='Cash on Delivery is collected after delivery.')
     session_id = payload.get('session_id')
     stripe_key = settings.STRIPE_SECRET_KEY
     stripe_enabled = stripe_test_mode_enabled()
-    if stripe_enabled:
+    is_demo_payment = payment.transaction_id.startswith('demo_')
+    if not is_demo_payment and stripe_enabled:
         if not session_id or session_id != payment.transaction_id:
             raise HTTPException(status_code=400, detail='A valid Stripe Checkout session is required.')
         try:
@@ -412,13 +509,11 @@ def confirm_payment(payload: dict, background_tasks: BackgroundTasks, current_us
             raise HTTPException(status_code=400, detail='Stripe Checkout session could not be verified.')
         if session.payment_status != 'paid':
             raise HTTPException(status_code=400, detail='Stripe payment is not complete.')
-    elif payment.payment_method != 'mock':
-        raise HTTPException(status_code=400, detail='Payment cannot be confirmed in demo mode.')
+    elif not is_demo_payment:
+        raise HTTPException(status_code=400, detail='Payment cannot be confirmed without a matching demo payment session.')
     payment.status = 'paid'
     order.payment_status = 'paid'
-    order.order_status = 'confirmed'
-    db.commit()
-    add_notification(db, current_user.id, 'payment', f'Payment confirmed for order #{order.id}.', background_tasks)
+    update_order_status(db, order, 'payment_confirmed', background_tasks)
     background_tasks.add_task(send_email, current_user.email, 'Payment confirmed', f'Payment for order #{order.id} was confirmed.')
     return PaymentRead.model_validate(payment)
 
@@ -439,9 +534,7 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks, db
             order = db.query(Order).filter(Order.id == payment.order_id).first()
             payment.status = 'paid'
             order.payment_status = 'paid'
-            order.order_status = 'confirmed'
-            db.commit()
-            add_notification(db, order.user_id, 'payment', f'Payment confirmed for order #{order.id}.', background_tasks)
+            update_order_status(db, order, 'payment_confirmed', background_tasks)
             background_tasks.add_task(send_email, order.user.email, 'Payment confirmed', f'Payment for order #{order.id} was confirmed.')
     return {'received': True}
 

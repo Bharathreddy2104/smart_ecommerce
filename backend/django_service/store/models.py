@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
-from django.db import models
+from datetime import timedelta
+from django.db import models, transaction
 from django.utils import timezone
 
 
@@ -106,12 +107,18 @@ class Cart(models.Model):
 
 class Order(models.Model):
     ORDER_STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('confirmed', 'Confirmed'),
+        ('order_placed', 'Order Placed'),
+        ('payment_confirmed', 'Payment Confirmed'),
+        ('order_confirmed', 'Order Confirmed'),
         ('processing', 'Processing'),
+        ('packed', 'Packed'),
         ('shipped', 'Shipped'),
+        ('out_for_delivery', 'Out for Delivery'),
         ('delivered', 'Delivered'),
         ('cancelled', 'Cancelled'),
+        ('payment_failed', 'Payment Failed'),
+        ('return_requested', 'Return Requested'),
+        ('returned', 'Returned'),
     ]
     PAYMENT_STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -123,8 +130,13 @@ class Order(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders')
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='pending')
-    order_status = models.CharField(max_length=20, choices=ORDER_STATUS_CHOICES, default='pending')
+    order_status = models.CharField(max_length=30, choices=ORDER_STATUS_CHOICES, default='order_placed')
     timestamp = models.DateTimeField(default=timezone.now)
+    shipping_address = models.TextField(blank=True, default='')
+    tracking_number = models.CharField(max_length=40, blank=True, default='')
+    carrier_name = models.CharField(max_length=100, blank=True, default='SmartCart Express')
+    shipped_at = models.DateTimeField(null=True, blank=True)
+    estimated_delivery = models.DateField(null=True, blank=True)
 
     class Meta:
         db_table = 'store_order'
@@ -132,6 +144,86 @@ class Order(models.Model):
 
     def __str__(self):
         return f'Order #{self.pk}'
+
+    def save(self, *args, **kwargs):
+        is_new = self._state.adding
+        previous_status = None
+        if not is_new:
+            previous_status = (
+                Order.objects.filter(pk=self.pk)
+                .values_list('order_status', flat=True)
+                .first()
+            )
+
+        if not self.estimated_delivery:
+            self.estimated_delivery = (self.timestamp or timezone.now()).date() + timedelta(days=5)
+        if self.order_status in {'shipped', 'out_for_delivery', 'delivered'}:
+            self.tracking_number = self.tracking_number or f'SC{self.pk or 0:09d}'
+            self.shipped_at = self.shipped_at or timezone.now()
+            if kwargs.get('update_fields') is not None:
+                kwargs['update_fields'] = set(kwargs['update_fields']) | {'tracking_number', 'shipped_at'}
+        if not is_new and previous_status != self.order_status and kwargs.get('update_fields') is not None:
+            kwargs['update_fields'] = set(kwargs['update_fields']) | {'estimated_delivery'}
+
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+
+            if is_new:
+                OrderStatusEvent.objects.create(order=self, status=self.order_status)
+                Notification.objects.create(
+                    user=self.user,
+                    type='order',
+                    message=f'Your order #{self.pk} has been placed.',
+                )
+            elif previous_status != self.order_status:
+                progression = [status for status, _ in self.ORDER_STATUS_CHOICES[:8]]
+                previous_index = progression.index(previous_status) if previous_status in progression else -1
+                current_index = progression.index(self.order_status) if self.order_status in progression else -1
+                statuses_to_record = (
+                    progression[previous_index + 1:current_index + 1]
+                    if previous_index >= 0 and current_index > previous_index
+                    else [self.order_status]
+                )
+                for status_value in statuses_to_record:
+                    OrderStatusEvent.objects.create(order=self, status=status_value)
+                    label = dict(self.ORDER_STATUS_CHOICES)[status_value]
+                    notification_type = 'shipping' if status_value in {'shipped', 'out_for_delivery', 'delivered'} else 'order'
+                    Notification.objects.create(
+                        user=self.user,
+                        type=notification_type,
+                        message=f'Your order #{self.pk} {self._status_notification_text(status_value, label)}',
+                    )
+
+    @staticmethod
+    def _status_notification_text(status_value, label):
+        notification_text = {
+            'order_placed': 'has been placed.',
+            'payment_confirmed': 'has confirmed payment.',
+            'order_confirmed': 'has been confirmed.',
+            'processing': 'is being processed.',
+            'packed': 'has been packed.',
+            'shipped': 'has been shipped.',
+            'out_for_delivery': 'is out for delivery.',
+            'delivered': 'has been delivered.',
+            'cancelled': 'has been cancelled.',
+            'payment_failed': 'has a failed payment.',
+            'return_requested': 'has a return request.',
+            'returned': 'has been returned.',
+        }
+        return notification_text.get(status_value, f'has been updated to {label.lower()}.')
+
+
+class OrderStatusEvent(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='status_history')
+    status = models.CharField(max_length=30, choices=Order.ORDER_STATUS_CHOICES)
+    timestamp = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'store_order_status_event'
+        ordering = ['timestamp', 'id']
+
+    def __str__(self):
+        return f'Order #{self.order_id} - {self.get_status_display()}'
 
 
 class OrderItem(models.Model):
@@ -149,9 +241,10 @@ class OrderItem(models.Model):
 
 class Payment(models.Model):
     PAYMENT_METHOD_CHOICES = [
-        ('card', 'Card'),
-        ('stripe', 'Stripe'),
-        ('mock', 'Mock'),
+        ('cash_on_delivery', 'Cash on Delivery'),
+        ('online', 'Online Payment'),
+        ('debit_card', 'Debit Card'),
+        ('credit_card', 'Credit Card'),
     ]
     STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -162,7 +255,7 @@ class Payment(models.Model):
 
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='payments')
     amount = models.DecimalField(max_digits=12, decimal_places=2)
-    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, default='stripe')
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, default='online')
     transaction_id = models.CharField(max_length=150, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     created_at = models.DateTimeField(default=timezone.now)

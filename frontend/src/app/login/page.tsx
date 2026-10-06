@@ -12,12 +12,17 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [message, setMessage] = useState('');
   const [returnProductId, setReturnProductId] = useState('');
+  const [returnToRegister, setReturnToRegister] = useState('/register');
   const [providers, setProviders] = useState<Providers>({ google: false, facebook: false, auth0: false });
 
   useEffect(() => {
     apiFetch<Providers>('/api/auth/providers').then(setProviders).catch(() => undefined);
-    const productId = new URLSearchParams(window.location.search).get('add_product') ?? '';
-    if (/^\d+$/.test(productId)) setReturnProductId(productId);
+    const params = new URLSearchParams(window.location.search);
+    const productId = params.get('add_product') ?? '';
+    if (/^\d+$/.test(productId)) {
+      setReturnProductId(productId);
+      setReturnToRegister(`/register?${params.toString()}`);
+    }
   }, []);
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -32,11 +37,13 @@ export default function LoginPage() {
       const params = new URLSearchParams(window.location.search);
       const productId = params.get('add_product');
       if (productId && /^\d+$/.test(productId)) {
+        const requestedQuantity = Number(params.get('quantity'));
+        const quantity = Number.isSafeInteger(requestedQuantity) && requestedQuantity > 0 ? requestedQuantity : 1;
         await apiFetch('/api/cart/items', {
           method: 'POST',
-          body: JSON.stringify({ product: Number(productId), quantity: 1 }),
+          body: JSON.stringify({ product: Number(productId), quantity }),
         });
-        window.location.href = '/cart';
+        window.location.href = params.get('checkout') === '1' ? '/checkout' : '/cart';
         return;
       }
       window.location.href = '/products';
@@ -54,7 +61,7 @@ export default function LoginPage() {
         <input required type="password" autoComplete="current-password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
         <button type="submit">Login</button>
         {message && <p role="alert">{message}</p>}
-        <p><Link href={returnProductId ? `/register?add_product=${returnProductId}` : '/register'}>New customer? Register</Link></p>
+        <p><Link href={returnProductId ? returnToRegister : '/register'}>New customer? Register</Link></p>
         <p className="muted">External sign-in: Google {providers.google ? 'configured' : 'placeholder'}, Facebook {providers.facebook ? 'configured' : 'placeholder'}, Auth0 {providers.auth0 ? 'configured' : 'placeholder'}.</p>
       </form>
     </main>

@@ -3,6 +3,7 @@ import csv
 from io import BytesIO
 import uuid
 
+from django.db import transaction
 from django.db.models import Sum, Q
 from django.http import HttpResponse
 from django.shortcuts import render
@@ -216,28 +217,44 @@ class OrderListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        orders = Order.objects.filter(user=request.user).prefetch_related('items')
+        orders = (
+            Order.objects.filter(user=request.user)
+            .select_related('user')
+            .prefetch_related('items__product', 'status_history', 'payments')
+        )
         return Response(OrderSerializer(orders, many=True).data)
 
     def post(self, request):
-        cart_items = Cart.objects.filter(user=request.user).select_related('product')
-        if not cart_items.exists():
-            return Response({'detail': 'Your cart is empty.'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            payment_method = request.data.get('payment_method', 'online')
+            valid_payment_methods = {value for value, _ in Payment.PAYMENT_METHOD_CHOICES}
+            if payment_method not in valid_payment_methods:
+                return Response({'detail': 'Invalid payment method.'}, status=status.HTTP_400_BAD_REQUEST)
+            cart_items = list(Cart.objects.filter(user=request.user).select_related('product'))
+            if not cart_items:
+                return Response({'detail': 'Your cart is empty.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        total = sum((item.product.price * item.quantity) for item in cart_items)
-        order = Order.objects.create(user=request.user, total=total, payment_status='pending', order_status='pending')
+            for item in cart_items:
+                if item.product.stock < item.quantity:
+                    return Response({'detail': f'Not enough stock for {item.product.name}.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        for item in cart_items:
-            if item.product.stock < item.quantity:
-                order.delete()
-                return Response({'detail': f'Not enough stock for {item.product.name}.'}, status=status.HTTP_400_BAD_REQUEST)
-            OrderItem.objects.create(order=order, product=item.product, quantity=item.quantity, price=item.product.price)
-            item.product.stock -= item.quantity
-            item.product.save(update_fields=['stock', 'updated_at'])
+            total = sum((item.product.price * item.quantity) for item in cart_items)
+            order = Order.objects.create(
+                user=request.user,
+                total=total,
+                payment_status='pending',
+                order_status='order_placed',
+                shipping_address=request.data.get('shipping_address', '').strip(),
+            )
 
-        Payment.objects.create(order=order, amount=total, payment_method='stripe', status='pending')
-        cart_items.delete()
-        order.refresh_from_db()
+            for item in cart_items:
+                OrderItem.objects.create(order=order, product=item.product, quantity=item.quantity, price=item.product.price)
+                item.product.stock -= item.quantity
+                item.product.save(update_fields=['stock', 'updated_at'])
+
+            Payment.objects.create(order=order, amount=total, payment_method=payment_method, status='pending')
+            Cart.objects.filter(user=request.user).delete()
+            order.refresh_from_db()
         return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
 
 
@@ -245,7 +262,12 @@ class OrderDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        order = Order.objects.filter(pk=pk, user=request.user).prefetch_related('items').first()
+        order = (
+            Order.objects.filter(pk=pk, user=request.user)
+            .select_related('user')
+            .prefetch_related('items__product', 'status_history', 'payments')
+            .first()
+        )
         if order is None:
             return Response({'detail': 'Order not found.'}, status=status.HTTP_404_NOT_FOUND)
         return Response(OrderSerializer(order).data)
@@ -262,19 +284,13 @@ class PaymentCreateView(APIView):
 
         payment = Payment.objects.filter(order=order).first()
         if payment is None:
-            payment = Payment.objects.create(order=order, amount=order.total, payment_method='mock', status='pending')
-
-        payment.status = 'paid'
-        payment.transaction_id = f'mock_{uuid.uuid4().hex[:12]}'
-        payment.payment_method = 'mock'
-        payment.save(update_fields=['status', 'transaction_id', 'payment_method'])
-
-        order.payment_status = 'paid'
-        order.order_status = 'confirmed'
-        order.save(update_fields=['payment_status', 'order_status'])
-
-        Notification.objects.create(user=request.user, type='payment', message=f'Payment successful for order #{order.id}.', is_read=False)
-        return Response(PaymentSerializer(payment).data)
+            return Response({'detail': 'Payment record not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if payment.payment_method == 'cash_on_delivery':
+            return Response({'detail': 'Cash on Delivery is collected after delivery.'}, status=status.HTTP_400_BAD_REQUEST)
+        payment.transaction_id = f'demo_{uuid.uuid4().hex}'
+        payment.status = 'pending'
+        payment.save(update_fields=['status', 'transaction_id'])
+        return Response({**PaymentSerializer(payment).data, 'demo': True})
 
 
 class PaymentConfirmView(APIView):
@@ -285,11 +301,15 @@ class PaymentConfirmView(APIView):
         payment = Payment.objects.filter(order_id=order_id, order__user=request.user).first()
         if payment is None:
             return Response({'detail': 'Payment not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if payment.payment_method == 'cash_on_delivery':
+            return Response({'detail': 'Cash on Delivery is collected after delivery.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not payment.transaction_id.startswith('demo_'):
+            return Response({'detail': 'A valid payment session is required.'}, status=status.HTTP_400_BAD_REQUEST)
         payment.status = 'paid'
         payment.transaction_id = payment.transaction_id or f'confirm_{uuid.uuid4().hex[:12]}'
         payment.save(update_fields=['status', 'transaction_id'])
         payment.order.payment_status = 'paid'
-        payment.order.order_status = 'confirmed'
+        payment.order.order_status = 'payment_confirmed'
         payment.order.save(update_fields=['payment_status', 'order_status'])
         return Response(PaymentSerializer(payment).data)
 
@@ -426,11 +446,6 @@ class AdminOrderListView(APIView):
         order.order_status = order_status
         order.payment_status = payment_status
         order.save(update_fields=['order_status', 'payment_status'])
-        Notification.objects.create(
-            user=order.user,
-            type='shipping' if order_status in {'shipped', 'delivered'} else 'order',
-            message=f'Order #{order.id} status: {order.order_status}.',
-        )
         return Response(OrderSerializer(order).data)
 
 
