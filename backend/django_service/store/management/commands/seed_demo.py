@@ -1,8 +1,7 @@
-from html import escape
 from pathlib import Path
 
 from django.conf import settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.utils.text import slugify
 
 from store.models import Category, Product
@@ -79,42 +78,61 @@ CATALOG = {
     ],
 }
 
-CATEGORY_COLORS = {
-    "Men's Clothing": ('#dbeafe', '#1d4ed8'),
-    "Women's Clothing": ('#fce7f3', '#be185d'),
-    'Shoes': ('#ffedd5', '#c2410c'),
-    'Electronics': ('#e0e7ff', '#4338ca'),
-    'Mobiles & Accessories': ('#cffafe', '#0e7490'),
-    'Laptops & Computers': ('#dbeafe', '#0369a1'),
-    'Home & Kitchen': ('#dcfce7', '#15803d'),
-    'Home': ('#dcfce7', '#15803d'),
-    'Beauty': ('#fae8ff', '#a21caf'),
-    'Accessories': ('#fef3c7', '#b45309'),
+# Unsplash photo IDs document the source of each locally bundled product photo.
+PRODUCT_PHOTOS = {
+    'mens-casual-cotton-shirt': '1516826957135-700dedea698c',
+    'mens-slim-fit-jeans': '1542272604-787c3835535d',
+    'mens-formal-shirt': '1521572163474-6864f9cf17ab',
+    'mens-polo-t-shirt': '1551028719-00167b16eac5',
+    'mens-lightweight-hoodie': '1515886657613-9f3515b0c78f',
+    'womens-floral-summer-dress': '1515372039744-b8f02a3ae446',
+    'womens-casual-kurti': '1529139574466-a303027c1d8b',
+    'womens-denim-jacket': '1490481651871-ab68de25d43d',
+    'womens-hooded-sweatshirt': '1503342217505-b0a15ec3261c',
+    'womens-cotton-leggings': '1483985988355-763728e1935b',
+    'womens-running-shoes': '1543163521-1bf539c55dd2',
+    'mens-sports-shoes': '1542291026-7eec264c27ff',
+    'mens-casual-sneakers': '1549298916-b41d501d3772',
+    'womens-casual-sneakers': '1600185365483-26d7a4cc7519',
+    'mens-formal-shoes': '1560343090-f0409e92791a',
+    'wireless-bluetooth-headphones': '1505740420928-5e560c06d30e',
+    'smart-watch': '1523275335684-37898b6baf30',
+    'wireless-mouse': '1527814050087-3793815479db',
+    'mechanical-keyboard': '1587829741301-dc798b83add3',
+    'usb-c-hub': '1498049794561-7780e7231661',
+    'bluetooth-speaker': '1590658268037-6bf12165a8df',
+    '20000-mah-power-bank': '1583394838336-acd977736f90',
+    '5g-android-smartphone': '1511707171634-5f897ff02aa9',
+    'protective-smartphone-case': '1598327105666-5b89351aff97',
+    'fast-charging-adapter': '1605236453806-6ff36851218e',
+    'braided-usb-c-cable': '1592750475338-74b7b21085ab',
+    '14-inch-everyday-laptop': '1496181133206-80ce9b88a853',
+    '27-inch-full-hd-monitor': '1498050108023-c5249f4df085',
+    '1080p-usb-webcam': '1531297484001-80022131f5a1',
+    '1-tb-portable-ssd': '1517336714731-489689fd1ca8',
+    'adjustable-laptop-stand': '1541807084-5c52b6b3adef',
+    'digital-air-fryer': '1556911220-e15b29be8c8f',
+    'electric-kettle': '1556910103-1c02745aae4d',
+    '750-w-mixer-grinder': '1556909114-f6e7ad7d3136',
+    'drip-coffee-maker': '1494438639946-1ebd1d20bf85',
+    'non-stick-frying-pan': '1495474472287-4d71bcdd2085',
+    'desk-lamp': '1509042239860-f550ce710b93',
+    'insulated-bottle': '1608270586620-248524c67de9',
+    'daily-face-moisturizer': '1608248543803-ba4f8c70ae0b',
+    'spf-50-sunscreen-lotion': '1596462502278-27bfdc403348',
+    'floral-eau-de-parfum': '1556229010-6c3f2c9ca5f8',
+    'ceramic-hair-dryer': '1570172619644-dfd03ed5d881',
+    'stainless-steel-insulated-bottle': '1602143407151-7111542de6e8',
+    'aviator-sunglasses': '1511499767150-a48a237f0083',
+    'everyday-leather-wallet': '1584917865442-de89df76afd3',
+    'travel-backpack': '1553062407-98eeb64c6a62',
+    'minimal-analog-watch': '1523170335258-f5ed11844a49',
+    'laptop-sleeve': '1544816155-12df9643f363',
 }
 
 
-def product_artwork(name, glyph, background, accent):
-    safe_name = escape(name)
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 520" role="img" aria-label="{safe_name}">
-  <defs>
-    <linearGradient id="wash" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="{background}"/>
-      <stop offset="1" stop-color="#ffffff"/>
-    </linearGradient>
-  </defs>
-  <rect width="640" height="520" rx="36" fill="url(#wash)"/>
-  <circle cx="320" cy="225" r="148" fill="#ffffff" opacity=".78"/>
-  <circle cx="320" cy="225" r="123" fill="{background}"/>
-  <path d="M112 382h416" stroke="{accent}" stroke-width="3" opacity=".18"/>
-  <text x="320" y="275" text-anchor="middle" font-size="150" font-family="Segoe UI Emoji, Apple Color Emoji, sans-serif">{glyph}</text>
-  <rect x="95" y="404" width="450" height="62" rx="18" fill="#ffffff" opacity=".88"/>
-  <text x="320" y="443" text-anchor="middle" font-size="21" font-family="Arial, sans-serif" font-weight="700" fill="#172033">{safe_name}</text>
-</svg>
-'''
-
-
 class Command(BaseCommand):
-    help = 'Create an idempotent demo catalog with locally generated product artwork.'
+    help = 'Create an idempotent demo catalog with bundled product photography.'
 
     def handle(self, *args, **options):
         media_products = Path(settings.MEDIA_ROOT) / 'products'
@@ -123,15 +141,14 @@ class Command(BaseCommand):
 
         for category_name, products in CATALOG.items():
             category, _ = Category.objects.get_or_create(name=category_name)
-            background, accent = CATEGORY_COLORS[category_name]
-            for name, description, price, stock, popularity, glyph in products:
-                image_name = f'products/{slugify(name)}.svg'
+            for name, description, price, stock, popularity, _glyph in products:
+                product_slug = slugify(name)
+                if product_slug not in PRODUCT_PHOTOS:
+                    raise CommandError(f'No product photo is mapped for "{name}".')
+                image_name = f'products/{product_slug}.jpg'
                 image_path = Path(settings.MEDIA_ROOT) / image_name
-                image_path.parent.mkdir(parents=True, exist_ok=True)
-                image_path.write_text(
-                    product_artwork(name, glyph, background, accent),
-                    encoding='utf-8',
-                )
+                if not image_path.is_file():
+                    raise CommandError(f'Bundled product photo is missing: {image_path}')
                 Product.objects.update_or_create(
                     name=name,
                     defaults={
